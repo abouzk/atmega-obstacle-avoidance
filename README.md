@@ -27,7 +27,7 @@ To ensure precise position tracking without blocking the main execution loop, I 
 Implemented a **Proportional (P) Controller** to correct heading drift in real-time.
 * **Error Calculation:** `error = right_ticks - left_ticks`
 * **Correction:** Dynamically adjusts PWM duty cycle (`analogWrite`) to synchronize wheel velocities
-* *See `driveForward()` function in `RoboCan_StartStop.ino`*
+* *See `driveForward()` function in `main_controller.ino`*
 
 ### C. Safety Architecture (ISO 13482 Inspired)
 The system features a "Safety Override" layer that preempts navigation commands.
