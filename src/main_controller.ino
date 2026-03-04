@@ -1,6 +1,6 @@
 /**
- * Autonomous Mobile Robot Controller
- * Controls a two-tracked robot with encoder-based odometry and ultrasonic obstacle detection
+ * Basic mobile robot controller
+ * Uses encoders for movement tracking and an ultrasonic sensor for obstacle checks
  * 
  * Hardware:
  * - 2x DC motors with quadrature encoders
@@ -10,7 +10,7 @@
 
 #include <avr/interrupt.h>
 
-// ===== MOTOR CONFIGURATION =====
+// ===== MOTOR PINS =====
 #define IN1 12  // Right motor direction control (HIGH = forward)
 #define IN2 13  // Right motor direction control (LOW = forward)
 #define IN3 7   // Left motor direction control (HIGH = forward)
@@ -18,22 +18,22 @@
 #define ENA 11  // Right motor PWM speed (0-255)
 #define ENB 6   // Left motor PWM speed (0-255)
 
-// ===== ENCODER CONFIGURATION =====
-// Quadrature encoder pins for motor speed/direction feedback
+// ===== ENCODER PINS =====
+// Encoder pins used for wheel tick counting
 #define ENCA1 2      // Right encoder channel A (interrupt pin)
 #define ENCB1 4      // Right encoder channel B
 #define ENCA2 3      // Left encoder channel A (interrupt pin)
 #define ENCB2 5      // Left encoder channel B
 
-// ===== ULTRASONIC SENSOR CONFIGURATION =====
+// ===== ULTRASONIC SENSOR PINS =====
 const int echoPin = 9;   // Receives echo pulse from HC-SR04
 const int trigPin = 10;  // Triggers distance measurement on HC-SR04
 
-// ===== BUTTON CONFIGURATION =====
+// ===== BUTTON PIN =====
 #define BUTTON 22  // Button input (pulled high, LOW when pressed)
 
-// ===== CALIBRATION CONSTANTS =====
-// These values must be calibrated for one's specific robot hardware
+// ===== TUNING VALUES =====
+// Change these based on your robot
 volatile int r_pos = 0;  // Right encoder position (ticks)
 volatile int l_pos = 0;  // Left encoder position (ticks)
 const unsigned int encoder_ticks_per_meter = 9000;  // Encoder ticks per meter traveled
@@ -42,7 +42,7 @@ const int fullturndegrees = 2900;  // Encoder ticks for a full 360-degree rotati
 void setup() {
   Serial.begin(9600);
   
-  // Initialize motor control pins as outputs
+  // Motor pins
   pinMode(IN1, OUTPUT);
   pinMode(IN2, OUTPUT);
   pinMode(ENA, OUTPUT);
@@ -50,27 +50,27 @@ void setup() {
   pinMode(IN4, OUTPUT);
   pinMode(ENB, OUTPUT);
 
-  // Initialize encoder pins as inputs
+  // Encoder pins
   pinMode(ENCA1, INPUT);
   pinMode(ENCB1, INPUT);
   pinMode(ENCA2, INPUT);
   pinMode(ENCB2, INPUT);
 
-  // Attach interrupts to encoder pins for high-speed position tracking
-  // CHANGE trigger fires on both rising and falling edges for better resolution
+  // Use interrupts to count encoder ticks
+  // CHANGE means it triggers on both rising and falling edges
   attachInterrupt(digitalPinToInterrupt(ENCA1), rightEncoder, CHANGE);
   attachInterrupt(digitalPinToInterrupt(ENCA2), leftEncoder, CHANGE);
 
-  // Initialize ultrasonic sensor pins
+  // Ultrasonic sensor pins
   pinMode(trigPin, OUTPUT);
   pinMode(echoPin, INPUT);
 
-  // Initialize button with internal pull-up (reads LOW when pressed)
+  // Button with internal pull-up (LOW when pressed)
   pinMode(BUTTON, INPUT_PULLUP);
 }
 
 void loop() {
-  // Read button state (INPUT_PULLUP: LOW when pressed)
+  // Read button (LOW when pressed)
   bool buttonState = digitalRead(BUTTON);
   
   // TODO: Implement button-triggered modes (autonomous, manual, etc.)
@@ -78,7 +78,7 @@ void loop() {
   //   Serial.println("Button Pressed");
   // }
   
-  // Telemetry output
+  // Print sensor + encoder values
   Serial.print("Right: ");
   Serial.print(r_pos);
   Serial.print("  |  Left: ");
@@ -87,27 +87,26 @@ void loop() {
   Serial.print(measureDistance());
   Serial.println(" cm");
   
-  // TEST SEQUENCE: Comment out unused movements
-  turn(90);
-  // driveForward(1.0);
-  // turn(180);
-  // driveForward(0.5);
-  // turn(-90);
-  // driveForward(1.0);
-  // turn(180);
-  
-  Serial.println("---END LOOP---");
-  delay(3000);
+  // Run one waypoint-style demo sequence once, then idle
+  static bool ranSequence = false;
+  if (!ranSequence) {
+    driveForward(1.0);
+    turn(90);
+    driveForward(0.5);
+    turn(180);
+    ranSequence = true;
+    Serial.println("---SEQUENCE COMPLETE---");
+  }
+
+  delay(300);
 }
 
 /**
- * Right encoder interrupt handler
- * Triggered on CHANGE (rising and falling edges) of ENCA1
- * Direction determined by comparing ENCA1 and ENCB1 states
+ * Right encoder interrupt
+ * Updates right wheel tick count
  */
 void rightEncoder() {
-  // If channel A and B are in same state, robot moving forward
-  // If different state, robot moving backward
+  // Same state = one direction, different = the other direction
   if (digitalRead(ENCA1) == digitalRead(ENCB1)) {
     r_pos++;  // Forward rotation
   } else {
@@ -116,9 +115,8 @@ void rightEncoder() {
 }
 
 /**
- * Left encoder interrupt handler
- * Triggered on CHANGE (rising and falling edges) of ENCA2
- * Direction determined by comparing ENCA2 and ENCB2 states
+ * Left encoder interrupt
+ * Updates left wheel tick count
  */
 void leftEncoder() {
   if (digitalRead(ENCA2) == digitalRead(ENCB2)) {
@@ -129,43 +127,58 @@ void leftEncoder() {
 }
 
 /**
- * Drive forward a specified distance using proportional feedback control
- * Uses encoder-based odometry to track actual distance traveled
- * Subsumption architecture: obstacle checking takes priority over motion
- * 
- * @param distance Distance to travel in meters
+ * Drive forward for a set distance (meters)
+ * Uses a simple P controller to keep left/right wheels close
  */
 void driveForward(float distance) {
-  // Convert meters to encoder ticks based on wheel circumference
+  // Convert meters to encoder ticks
   long target_ticks = distance * encoder_ticks_per_meter; 
   
-  // Reset position counters to measure distance for this segment only
+  // Reset ticks for this move
+  noInterrupts();
   r_pos = 0; 
   l_pos = 0;
+  interrupts();
 
-  // Proportional control parameters (tune these for your robot)
-  const float Kp = 5.0;       // Proportional gain - higher = stronger wheel sync correction
+  // Basic P controller settings
+  const float Kp = 5.0;       // Bigger Kp = stronger correction
   const int baseSpeed = 200;  // Base PWM speed (0-255)
 
-  // Drive until average distance traveled reaches target
-  while ((abs(r_pos) + abs(l_pos)) / 2 < target_ticks) {
+  // Keep driving until target is reached
+  while (true) {
+    int rightTicks;
+    int leftTicks;
+    noInterrupts();
+    rightTicks = r_pos;
+    leftTicks = l_pos;
+    interrupts();
+
+    if ((abs(rightTicks) + abs(leftTicks)) / 2 >= target_ticks) {
+      break;
+    }
     
-    // SUBSUMPTION: Obstacle detection takes priority - stops motors if blocked
-    checkObstacle(); 
+    // If blocked, stop and wait until clear
+    if(checkObstacle()) {
+      stopMotors();
+      Serial.println("Obstacle detected. Waiting...");
+      while (checkObstacle()) {
+        delay(200);
+      }
+      Serial.println("Path clear. Continuing forward.");
+    }
 
-    // PROPORTIONAL CONTROLLER: Keep wheels synchronized
-    // Error is positive when right wheel is ahead (slipping)
-    int error = abs(r_pos) - abs(l_pos); 
+    // Wheel sync error
+    int error = abs(rightTicks) - abs(leftTicks); 
 
-    // Adjust PWM: Slow down the fast wheel, speed up the slow wheel
+    // Adjust motor speed based on error
     int rightSpeed = baseSpeed - (Kp * error);
     int leftSpeed = baseSpeed + (Kp * error);
 
-    // Constrain to valid PWM range
+    // Keep PWM in range
     rightSpeed = constrain(rightSpeed, 0, 255);
     leftSpeed = constrain(leftSpeed, 0, 255);
 
-    // Apply speeds to motors (both driving forward)
+    // Drive both motors forward
     digitalWrite(IN1, HIGH);
     digitalWrite(IN2, LOW);
     analogWrite(ENA, rightSpeed);
@@ -174,10 +187,10 @@ void driveForward(float distance) {
     digitalWrite(IN4, LOW);
     analogWrite(ENB, leftSpeed);
 
-    // Telemetry for tuning and debugging
+    // Debug print
     Serial.print("Target: "); Serial.print(target_ticks);
-    Serial.print(" | R: "); Serial.print(r_pos);
-    Serial.print(" | L: "); Serial.print(l_pos);
+    Serial.print(" | R: "); Serial.print(rightTicks);
+    Serial.print(" | L: "); Serial.print(leftTicks);
     Serial.print(" | Error: "); Serial.println(error);
   }
 
@@ -185,21 +198,18 @@ void driveForward(float distance) {
 }
 
 /**
- * Rotate in place by a specified angle
- * Currently supports: 90°, -90°, 180°, 360° (extend for arbitrary angles)
- * Uses encoder ticks and pre-calibrated turn factors
- * 
- * @param degrees Rotation angle (positive = right/clockwise, negative = left/counter-clockwise)
+ * Turn in place by a fixed angle
+ * Supports: 90, -90, 180, 360
  */
 void turn(int degrees) {
   Serial.print("TURN: ");
   Serial.print(degrees);
   Serial.println(" degrees");
-  delay(1000);  // Brief pause before starting turn
+  delay(1000);  // Small pause before turn
   
   reset_encoders();
   
-  // Determine motor directions and encoder tick scaling based on turn angle
+  // Set motor directions and tick scaling for each turn
   int r_fac, l_fac;
   
   if (degrees == 90) {
@@ -207,12 +217,12 @@ void turn(int degrees) {
     digitalWrite(IN1, LOW);   // Backward right
     digitalWrite(IN2, HIGH);
     analogWrite(ENA, 255);
-    r_fac = -4;  // Right wheel ticks scaled (negative = backward)
+    r_fac = -4;
 
     digitalWrite(IN3, HIGH);  // Forward left
     digitalWrite(IN4, LOW);
     analogWrite(ENB, 255);
-    l_fac = 4;   // Left wheel ticks scaled
+    l_fac = 4;
     
   } else if (degrees == -90) {
     // Left turn: right motor forward, left motor backward
@@ -255,28 +265,28 @@ void turn(int degrees) {
     return;
   }
 
-  // Debug: Show calculated tick targets
+  // Print target ticks
   Serial.print("Target ticks - Right: ");
   Serial.print(fullturndegrees / r_fac);
   Serial.print(" | Left: ");
   Serial.println(fullturndegrees / l_fac);
 
-  // Rotate until both wheels reach their target tick counts
-  while (abs(r_pos) < abs(fullturndegrees / r_fac) && abs(l_pos) < abs(fullturndegrees / l_fac)) {
-    // Once right wheel reaches target, stop it (let left wheel catch up)
+  // Keep turning until both wheels hit target
+  while (abs(r_pos) < abs(fullturndegrees / r_fac) || abs(l_pos) < abs(fullturndegrees / l_fac)) {
+    // Stop right motor if it reached target
     if (abs(r_pos) >= abs(fullturndegrees / r_fac)) {
       analogWrite(ENA, 0);
       digitalWrite(IN1, LOW);
       digitalWrite(IN2, LOW);
     }
-    // Once left wheel reaches target, stop it
+    // Stop left motor if it reached target
     if (abs(l_pos) >= abs(fullturndegrees / l_fac)) {
       analogWrite(ENB, 0);
       digitalWrite(IN3, LOW);
       digitalWrite(IN4, LOW);
     }
     
-    // Telemetry
+    // Debug print
     Serial.print("Right: ");
     Serial.print(r_pos);
     Serial.print("  |  Left: ");
@@ -288,29 +298,26 @@ void turn(int degrees) {
 }
 
 /**
- * Measure distance to nearest obstacle using HC-SR04 ultrasonic sensor
- * 
- * @return Distance to obstacle in centimeters (0 = out of range or no object)
+ * Measure distance with HC-SR04
+ * Returns cm, or 0 if timeout
  */
 float measureDistance() {
-  // Ensure trigger pin is low before pulse
+  // Start from LOW
   digitalWrite(trigPin, LOW);
   delayMicroseconds(2);
 
-  // Send 10µs pulse to trigger sensor
+  // Send trigger pulse
   digitalWrite(trigPin, HIGH);
   delayMicroseconds(10);
   digitalWrite(trigPin, LOW);
 
-  // Measure echo pulse width (proportional to distance)
-  // Timeout after 30ms (prevents hanging on sensor failure)
+  // Measure echo pulse width (with timeout)
   long duration = pulseIn(echoPin, HIGH, 30000);
 
-  // Convert time to distance: speed of sound ≈ 343 m/s
-  // Distance = (duration / 2) * 0.0343 cm/µs
+  // Convert time to distance in cm
   float distanceCm = (duration / 2.0) * 0.0343;
 
-  // Sensor returns 0 on timeout (out of range)
+  // Timeout gives distance 0
   if (duration == 0) {
     distanceCm = 0;
   }
@@ -319,41 +326,36 @@ float measureDistance() {
 }
 
 /**
- * Check for obstacles and stop if too close
- * Called during forward motion to implement subsumption architecture (obstacle checking = highest priority)
- * 
- * @note This function has a design issue: it should only update motor state based on sensor input,
- *       not re-drive motors. The calling function should maintain motor control.
+ * Check if something is too close in front
+ * Returns true if obstacle is too close, false otherwise.
  */
-void checkObstacle() {
+bool checkObstacle() {
   float distanceCm = measureDistance();
-  
-  const int OBSTACLE_THRESHOLD = 20;  // Minimum safe distance in cm
+  const int OBSTACLE_THRESHOLD = 20;  // Stop if closer than this
   
   Serial.print("Distance: ");
   Serial.print(distanceCm);
   Serial.println(" cm");
   
-  // If obstacle detected, stop motors immediately
+  // Obstacle found
   if ((distanceCm < OBSTACLE_THRESHOLD) && (distanceCm > 0)) {
-    Serial.println("OBSTACLE DETECTED - STOPPING");
-    stopMotors();
+    return true;
   }
+  return false;
 }
 
 /**
- * Reset encoder position counters and re-attach interrupts
- * Used between movement segments to measure distance for each segment independently
+ * Reset encoder counters back to 0
  */
 void reset_encoders() {
-  // Temporarily disable interrupts to safely reset counters
+  // Turn off interrupts while resetting
   detachInterrupt(digitalPinToInterrupt(ENCA1));
   detachInterrupt(digitalPinToInterrupt(ENCA2));
   
   r_pos = 0;
   l_pos = 0;
   
-  // Re-enable interrupts
+  // Turn interrupts back on
   attachInterrupt(digitalPinToInterrupt(ENCA1), rightEncoder, CHANGE);
   attachInterrupt(digitalPinToInterrupt(ENCA2), leftEncoder, CHANGE);
   
@@ -361,21 +363,20 @@ void reset_encoders() {
 }
 
 /**
- * Stop both motors and hold them stationary
- * Includes 2-second delay to ensure motors fully decelerate
+ * Stop both motors
  */
 void stopMotors() {
   Serial.println("STOPPING MOTORS");
   
-  // Cut all motor power
+  // PWM to 0
   analogWrite(ENA, 0);
   analogWrite(ENB, 0);
   
-  // Hold pins low (removes any residual force)
+  // Set direction pins low
   digitalWrite(IN1, LOW);
   digitalWrite(IN2, LOW);
   digitalWrite(IN3, LOW);
   digitalWrite(IN4, LOW);
   
-  delay(2000);  // Wait for motors to fully stop before next command
+  delay(300);  // Small settle delay
 }
